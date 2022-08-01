@@ -1,0 +1,310 @@
+#!/bin/bash
+
+# vorbis tags https://wiki.hydrogenaud.io/index.php?title=Tag_Mapping
+_LIST_PATH_="/home/serg/Загрузки/sync-files.list"
+_STORAGE_PATH_="/run/media/serg/6019-1EE9/Music"
+_ACTION_=none
+
+declare -a tagList=(    
+                    "ARTIST"
+                    "TITLE" 
+                    "ALBUM"
+                    "DATE" 
+                    "TRACKNUMBER" 
+                    "GENRE" 
+                    "DISCNUMBER" 
+                    "DISCTOTAL" 
+                    "TRACKTOTAL" 
+                    )
+
+declare -a directoryList
+declare -a flacList
+declare -a metaList
+
+checkStorage() 
+{
+    if [ ! -d "$_STORAGE_PATH_" ]; then
+        onError "No storage device found"
+    fi
+}
+
+
+onError() 
+{
+    _MSG_="$1"
+    echo "$_MSG_"
+    exit 1
+}
+
+
+showMessage() 
+{
+    _MSG_="$1"
+    echo "$_MSG_"
+}
+
+
+onFinish() 
+{
+    local _ARTIST_NAME_="$1"
+    local _ALBUM_NAME_="$2"
+
+    local _FINISHED_LIST_="/home/serg/Загрузки/albums-library.list"
+
+    if [ ! -e "$_FINISHED_LIST_" ]; then
+        echo "Album_log: " > "$_FINISHED_LIST_"
+    fi
+
+    echo "$_ARTIST_NAME_ - $_ALBUM_NAME_" >> "$_FINISHED_LIST_"
+}
+
+
+readList() 
+{
+
+    if [ ! -f "$_LIST_PATH_" ]; then
+        onError "No music list found"
+    fi
+
+    readarray -t directoryList <"$_LIST_PATH_"
+}
+
+setConfig()
+{
+    
+    [[ ! -z $VISUAL && -f "$_LIST_PATH_" ]] || onError "Can not open config"
+
+    $VISUAL "$_LIST_PATH_"
+}
+
+checkTag() 
+{
+    local fileName="$1"
+    local tagName="$2"
+    
+    case "$tagName" in 
+
+        DISCTOTAL | TOTALDISCS)
+
+            local tagField="$(metaflac --show-tag "DISCTOTAL" --show-tag "TOTALDISCS" "$fileName" \ 
+                | sed -E "s/(DISCTOTAL|TOTALDISCS)=//i")"
+            #echo "current tag field is: $tagField tag name is: $tagName"
+            [ ! -z "$tagField" ] || onError "[$tagName] field is empty in $fileName"
+            ;;
+
+        TRACKTOTAL | TOTALTRACKS)
+            
+            local tagField="$(metaflac --show-tag "TRACKTOTAL" --show-tag "TOTALTRACKS" "$fileName" \
+                | sed -E "s/(TRACKTOTAL|TOTALTRACKS)=//i")"
+            #echo "current tag field is: $tagField tag name is: $tagName"
+            [ ! -z "$tagField" ] || onError "[$tagName] field is empty in $fileName"
+            ;;
+
+        *) 
+            local tagField="$(metaflac --show-tag "$tagName" "$fileName" \
+                | sed "s/$tagName=//i")" #getting total tracks
+            
+            [ ! -z "$tagField" ] || onError "[$tagName] field is empty in $fileName"
+            ;;
+    esac
+}
+
+# sets global variable _CURR_TAG_
+setTag() 
+{
+    local fileName="$1"
+    local tagName="$2"
+    
+    _CURR_TAG_="$(metaflac --show-tag "$tagName" "$fileName" \
+        | sed "s/$tagName=//i")"
+
+    [ ! -z "$_CURR_TAG_" ] || onError "[$tagName] field is empty in $fileName"
+}
+
+
+fileCheck()  
+{
+    local verFile="$1"
+    local prevAlbum="$2"
+    local prevArtist="$3"
+    
+    setTag "$verFile" "ARTIST"
+    artistName="$_CURR_TAG_"
+    setTag "$verFile" "ALBUM"
+    albumName="$_CURR_TAG_"
+
+    if [ "$prevAlbum" != "$albumName" ] || [ "$prevArtist" != "$artistName" ]; then 
+        onError "Tags are not same [$prevAlbum:$albumName][$prevArtist:$artistName] in $verFile"
+    fi
+    
+    for tag in "${tagList[@]}"
+        do 
+            checkTag "$verFile" "$tag"
+        done
+
+    local comment="$(metaflac --show-tag=Comment "$verFile" \
+        | sed 's/Comment=//i')" # i do not need comment section
+    
+    if [ ! -z "$comment" ]; then
+        onError "Comment field is not empty in $verFile"
+    fi
+}
+
+
+getTagList() 
+{
+    local i="$1"
+    local tagsToCheck="$(metaflac --export-tags-to=- "$i" \
+        | awk -F= 'index($0,"=") {if ($1) print $1}' \
+        | sort -u)"
+    
+    readarray -t splitTags <<< "$tagsToCheck"
+    
+    for currTAG in "${splitTags[@]}"
+        do
+            [[ ! -z "$currTAG" ]] || continue
+            _del=false
+            for approvedTAG in "${tagList[@]}"
+                do
+                    if [[ "$approvedTAG" == "$currTAG" ]]; then
+                        _del=false
+                        break   
+                    else
+                        _del=true
+                        #echo "$approvedTAG" "$currTAG" $_del
+                    fi
+                done        
+            if [[ "$_del" == true ]]; then
+               metaflac --remove-tag "$currTAG" "$i" 
+               showMessage "Tag [$currTAG] from [$i] was deleted"
+            fi
+       done
+}
+
+sendFiles() 
+{
+    local _PATTERN_=":?<>*\\/|\"" #pattern for escaping symbols that fat32 not support 
+    local _DIR_="$1/"
+    local artistName="$2"
+    local albumName="$3"
+
+    local escapedAlbumName="$(echo "$albumName" \
+        | sed "s/[$_PATTERN_]/-/g")" toDO use THIS in future
+    local escapedArtistName="$(echo "$artistName" \
+        | sed "s/[$_PATTERN_]/-/g")" 
+
+    if [[ -z "$escapedAlbumName" ]] || [[ -z "$escapedArtistName" ]]; then 
+        onError "Escaped artist or album tag is empty"
+    fi 
+
+    local _TMP_="/home/serg/Загрузки/"
+    local _OUTPUT_="$_STORAGE_PATH_/$escapedArtistName/$escapedAlbumName"
+    #local _OUTPUT_="$_TMP_$escapedArtistName/$escapedAlbumName"
+    echo ""
+    echo "------------Folders:------------"
+    echo "Album Name: $escapedAlbumName"
+    echo "Artist Name: $escapedArtistName" 
+    echo "--------------------------------"
+    echo ""
+
+    rsync --mkpath --recursive --progress --checksum --no-perms --include="*.flac" --exclude="*" "$_DIR_" "$_OUTPUT_" \
+        && onFinish "$escapedArtistName" "$escapedAlbumName"
+
+}
+
+prepareFiles() 
+{
+    for ((i=0; i < ${#directoryList[@]}; i++))
+        do 
+            artistName="$(echo "${metaList[$i]}" \
+                |  cut -d ';' -f 1)"
+            albumName="$(echo "${metaList[$i]}" \
+                |  cut -d ';' -f 2)"
+            directory="${directoryList[$i]}"
+            sendFiles "$directory" "$artistName" "$albumName" 
+        done
+}
+
+readList
+
+while [ -n "$1" ]; do
+    case "$1" in
+
+        --clean | -c)
+        
+            showMessage "Run with clean option"
+            _ACTION_=clean 
+            ;;
+
+        --send | -s)
+
+            checkStorage
+            showMessage "Run with send option"
+            _ACTION_=send
+            ;;
+
+        --edit | -e)
+            showMessage "Run with edit option"
+            setConfig
+            _ACTION_=edit
+            exit 0
+            ;;
+        *) 
+            onError "No option found"
+            showMessage "clean | c - Clean files from not matching tags (recursive)"
+            ;;
+    esac
+    shift
+done
+
+for directory in "${directoryList[@]}"
+    do
+        [ -d "$directory" ] || onError "Directory [$directory] is not exists"
+
+        case "$_ACTION_" in
+            clean)
+                # Running with clean option could recursive
+                readarray -d '' flacList < <(find "$directory" -type f -name "*.flac" -print0 | sort -z)
+                ;;
+            send)   
+
+                readarray -d '' flacList < <(find "$directory" -maxdepth 1 -type f -name "*.flac" -print0 | sort -z)
+                ;;
+        esac
+        
+        if [[ "${#flacList[@]}" -eq 0 ]]; then
+            onError "No flac found"
+        fi
+        
+        case "$_ACTION_" in
+            clean)
+
+                for file in "${flacList[@]}"
+                    do
+                        [ -e "$file" ] || onError "File [$file] is not exists"
+                        getTagList "$file" 
+                    done 
+                ;;
+            send)   
+
+                compareFile=${flacList[0]} #get first val
+                
+                setTag "$compareFile" "Artist"
+                prevArtist="$_CURR_TAG_"
+                setTag "$compareFile" "Album"
+                prevAlbum="$_CURR_TAG_"
+
+                for file in "${flacList[@]}"
+                    do
+                        [ -e "$file" ] || onError "File [$file] is not exists"
+                        fileCheck "$file" "$prevAlbum" "$prevArtist"
+                    done 
+                metaList+=("$prevArtist;$prevAlbum")      
+                ;;
+        esac
+    done
+
+case "$_ACTION_" in
+    clean) ;;
+    send) prepareFiles ;;
+esac
