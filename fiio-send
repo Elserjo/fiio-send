@@ -86,7 +86,7 @@ checkTag()
 
         DISCTOTAL | TOTALDISCS)
 
-            local tagField="$(metaflac --show-tag "DISCTOTAL" --show-tag "TOTALDISCS" "$fileName" \ 
+            local tagField="$(metaflac --show-tag "DISCTOTAL" --show-tag "TOTALDISCS" "$fileName" \
                 | sed -E "s/(DISCTOTAL|TOTALDISCS)=//i")"
             #echo "current tag field is: $tagField tag name is: $tagName"
             [ ! -z "$tagField" ] || onError "[$tagName] field is empty in $fileName"
@@ -267,7 +267,6 @@ for directory in "${directoryList[@]}"
                 readarray -d '' flacList < <(find "$directory" -type f -name "*.flac" -print0 | sort -z)
                 ;;
             send)   
-
                 readarray -d '' flacList < <(find "$directory" -maxdepth 1 -type f -name "*.flac" -print0 | sort -z)
                 ;;
         esac
